@@ -166,6 +166,12 @@ class TaskManager:
         # Generate a session ID for this task
         session_id = str(uuid.uuid4())
         
+        # Build metadata including user ownership
+        task_metadata = metadata.dict() if metadata else {}
+        if user:
+            task_metadata["created_by"] = user
+        task_metadata["created_at"] = datetime.now().isoformat()
+        
         task = Task(
             id=task_id,
             sessionId=session_id,
@@ -174,13 +180,21 @@ class TaskManager:
                 timestamp=datetime.now().isoformat()
             ),
             history=[message],  # Initialize history with the first message
-            metadata=metadata.dict() if metadata else {},
+            metadata=task_metadata,
             artifacts=[]
         )
-        
-        # Store additional metadata
         if user:
-            task.metadata["created_by"] = user
+            task_metadata["created_by"] = user
+        task_metadata["created_at"] = datetime.now().isoformat()
+        
+        task = Task(
+            id=task_id,
+            sessionId=session_id,
+            status=task_status,
+            history=history,
+            metadata=task_metadata,
+            artifacts=[]
+        )
         
         # Add creation timestamp
         task.metadata["created_at"] = datetime.now().isoformat()
@@ -427,11 +441,14 @@ class TaskManager:
         if task_id not in self.tasks:
             return
         
-        self.tasks[task_id]["status"] = {
-            "state": state,
-            "message": message,
-            "timestamp": datetime.now().isoformat()
-        }
+        # Create new TaskStatus object
+        new_status = TaskStatus(
+            state=state,
+            message=message,
+            timestamp=datetime.now().isoformat()
+        )
+        
+        self.tasks[task_id]["status"] = new_status.dict()
     
     async def get_task(self, task_id: str, user: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Get task by ID, optionally checking ownership."""
