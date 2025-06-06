@@ -59,9 +59,18 @@ class TaskManager:
         self.retention_time = retention_time
         self._cleanup_task = None
         self._metrics_task = None
+        self._shutdown_event = None
+        self._background_tasks_started = False
+    
+    async def start_background_tasks(self):
+        """Start background tasks when event loop is available."""
+        if self._background_tasks_started:
+            return
+        
         self._shutdown_event = asyncio.Event()
         self._start_cleanup_task()
         self._start_metrics_task()
+        self._background_tasks_started = True
     
     def _start_cleanup_task(self):
         """Start background task for periodic cleanup."""
@@ -155,20 +164,25 @@ class TaskManager:
         self._enforce_task_limit()
         
         # Generate a session ID for this task
-        session_id = f"session_{task_id}"
-        
-        # Create initial history with the incoming message
-        history = [message]
-        
-        # Create task status object
-        task_status = TaskStatus(
-            state=TaskState.SUBMITTED,
-            message=None,
-            timestamp=datetime.now().isoformat()
-        )
+        session_id = str(uuid.uuid4())
         
         # Build metadata including user ownership
         task_metadata = metadata.dict() if metadata else {}
+        if user:
+            task_metadata["created_by"] = user
+        task_metadata["created_at"] = datetime.now().isoformat()
+        
+        task = Task(
+            id=task_id,
+            sessionId=session_id,
+            status=TaskStatus(
+                state=TaskState.SUBMITTED,
+                timestamp=datetime.now().isoformat()
+            ),
+            history=[message],  # Initialize history with the first message
+            metadata=task_metadata,
+            artifacts=[]
+        )
         if user:
             task_metadata["created_by"] = user
         task_metadata["created_at"] = datetime.now().isoformat()
@@ -181,6 +195,9 @@ class TaskManager:
             metadata=task_metadata,
             artifacts=[]
         )
+        
+        # Add creation timestamp
+        task.metadata["created_at"] = datetime.now().isoformat()
         
         self.tasks[task_id] = task.dict()
         
@@ -200,8 +217,8 @@ class TaskManager:
             # Update task status
             await self.update_task_status(task_id, TaskState.WORKING)
             
-            # Extract message from history and metadata
-            # The first message in history is the original user message
+            # Extract message and metadata
+            # The message is stored in the history array (first element)
             message = A2AMessage(**task["history"][0])
             metadata = TaskMetadata(**task.get("metadata", {}))
             
@@ -513,7 +530,7 @@ class A2AMinionsServer:
         self.base_url = base_url or f"http://{host}:{port}"
         self.app = FastAPI(title="A2A Minions Server", version="1.0.0")
         self.task_manager = TaskManager()
-        self._shutdown_event = asyncio.Event()
+        self._shutdown_event = None
         
         # Initialize authentication
         self.auth_config = auth_config or AuthConfig()
@@ -535,7 +552,8 @@ class A2AMinionsServer:
         # Handle signals for graceful shutdown
         def handle_shutdown(signum, frame):
             logger.info(f"Received signal {signum}, initiating graceful shutdown...")
-            self._shutdown_event.set()
+            if self._shutdown_event:
+                self._shutdown_event.set()
         
         signal.signal(signal.SIGINT, handle_shutdown)
         signal.signal(signal.SIGTERM, handle_shutdown)
@@ -550,7 +568,7 @@ class A2AMinionsServer:
             return card.dict(exclude_none=True)
         
         @self.app.get("/agent/authenticatedExtendedCard")
-        async def get_extended_card(token_data: TokenData = Depends(self.auth_manager.authenticate)):
+        async def get_extended_card(token_data: TokenData = Depends(self.auth_manager.get_authenticate_dependency())):
             """Get the extended agent card for authenticated users."""
             card = get_extended_agent_card(self.base_url)
             return card.dict(exclude_none=True)
@@ -575,7 +593,7 @@ class A2AMinionsServer:
             request: Request, 
             background_tasks: BackgroundTasks,
             token_data: Optional[TokenData] = Depends(
-                self.auth_manager.authenticate if self.auth_config.require_auth else lambda: None
+                self.auth_manager.get_authenticate_dependency() if self.auth_config.require_auth else lambda request: None
             )
         ):
             """Handle A2A JSON-RPC requests."""
@@ -698,7 +716,7 @@ class A2AMinionsServer:
         try:
             send_params = SendTaskParams(**params)
         except ValidationError as e:
-            # Re-raise the pydantic ValidationError directly
+            # Re-raise the ValidationError to be caught by the outer exception handler
             raise e
         
         # Create task
@@ -802,7 +820,8 @@ class A2AMinionsServer:
         try:
             get_params = GetTaskParams(**params)
         except ValidationError as e:
-            raise ValidationError(f"Invalid get parameters: {e}")
+            # Re-raise the ValidationError to be caught by the outer exception handler
+            raise e
         
         task = await self.task_manager.get_task(get_params.id, user)
         
@@ -829,7 +848,8 @@ class A2AMinionsServer:
         try:
             cancel_params = CancelTaskParams(**params)
         except ValidationError as e:
-            raise ValidationError(f"Invalid cancel parameters: {e}")
+            # Re-raise the ValidationError to be caught by the outer exception handler
+            raise e
         
         task = await self.task_manager.get_task(cancel_params.id, user)
         
@@ -861,6 +881,12 @@ class A2AMinionsServer:
         logger.info(f"Starting A2A Minions Server at {self.base_url}")
         
         async def serve():
+            # Create shutdown event now that event loop is running
+            self._shutdown_event = asyncio.Event()
+            
+            # Start background tasks now that event loop is running
+            await self.task_manager.start_background_tasks()
+            
             config = uvicorn.Config(
                 self.app,
                 host=self.host,
