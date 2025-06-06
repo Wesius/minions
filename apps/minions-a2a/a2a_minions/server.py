@@ -124,9 +124,11 @@ class TaskManager:
                 continue
                 
             # Check if task is old enough
-            created_at = datetime.fromisoformat(task["created_at"])
-            if now - created_at > self.retention_time:
-                tasks_to_remove.append(task_id)
+            created_at_str = task.get("metadata", {}).get("created_at")
+            if created_at_str:
+                created_at = datetime.fromisoformat(created_at_str)
+                if now - created_at > self.retention_time:
+                    tasks_to_remove.append(task_id)
             
             # Also check task completion time
             status = task.get("status", {})
@@ -161,22 +163,27 @@ class TaskManager:
         # Check task limit before creating
         self._enforce_task_limit()
         
+        # Generate a session ID for this task
+        session_id = str(uuid.uuid4())
+        
         task = Task(
             id=task_id,
-            message=message,
+            sessionId=session_id,
+            status=TaskStatus(
+                state=TaskState.SUBMITTED,
+                timestamp=datetime.now().isoformat()
+            ),
+            history=[message],  # Initialize history with the first message
             metadata=metadata.dict() if metadata else {},
-            status={
-                "state": TaskState.SUBMITTED,
-                "timestamp": datetime.now().isoformat()
-            },
-            artifacts=[],
-            created_at=datetime.now().isoformat(),
-            created_by=user
+            artifacts=[]
         )
         
-        # Store task metadata including user ownership
+        # Store additional metadata
         if user:
             task.metadata["created_by"] = user
+        
+        # Add creation timestamp
+        task.metadata["created_at"] = datetime.now().isoformat()
         
         self.tasks[task_id] = task.dict()
         
@@ -197,7 +204,8 @@ class TaskManager:
             await self.update_task_status(task_id, TaskState.WORKING)
             
             # Extract message and metadata
-            message = A2AMessage(**task["message"])
+            # The message is stored in the history array (first element)
+            message = A2AMessage(**task["history"][0])
             metadata = TaskMetadata(**task.get("metadata", {}))
             
             # Get timeout from metadata
@@ -691,7 +699,8 @@ class A2AMinionsServer:
         try:
             send_params = SendTaskParams(**params)
         except ValidationError as e:
-            raise ValidationError(f"Invalid task parameters: {e}")
+            # Re-raise the ValidationError to be caught by the outer exception handler
+            raise e
         
         # Create task
         task = await self.task_manager.create_task(
@@ -794,7 +803,8 @@ class A2AMinionsServer:
         try:
             get_params = GetTaskParams(**params)
         except ValidationError as e:
-            raise ValidationError(f"Invalid get parameters: {e}")
+            # Re-raise the ValidationError to be caught by the outer exception handler
+            raise e
         
         task = await self.task_manager.get_task(get_params.id, user)
         
@@ -821,7 +831,8 @@ class A2AMinionsServer:
         try:
             cancel_params = CancelTaskParams(**params)
         except ValidationError as e:
-            raise ValidationError(f"Invalid cancel parameters: {e}")
+            # Re-raise the ValidationError to be caught by the outer exception handler
+            raise e
         
         task = await self.task_manager.get_task(cancel_params.id, user)
         
