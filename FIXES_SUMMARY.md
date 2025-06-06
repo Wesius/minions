@@ -17,6 +17,11 @@
    - The message is actually stored in `task["history"][0]`
    - The `created_at` timestamp was being accessed from the wrong location
 
+4. **JSON Serialization Error in Client Factory**
+   - The client factory was trying to JSON serialize config objects containing Pydantic model classes
+   - The `structured_output_schema` field contained a `ModelMetaclass` that can't be serialized
+   - This caused a `TypeError: Object of type ModelMetaclass is not JSON serializable`
+
 ## Fixes Implemented
 
 ### 1. Fixed Task Creation (server.py, lines 157-188)
@@ -48,6 +53,20 @@ raise e  # Re-raise the original Pydantic ValidationError
 - Updated `execute_task` to access message from `task["history"][0]`
 - Updated `_cleanup_old_tasks` to access `created_at` from `task["metadata"]["created_at"]`
 
+### 4. Fixed JSON Serialization in Client Factory (client_factory.py, lines 76-100)
+```python
+# Added logic to handle non-serializable objects:
+serializable_config = {}
+for key, value in config.items():
+    if key == "structured_output_schema":
+        # For classes, use their name
+        if hasattr(value, '__name__'):
+            serializable_config[key] = f"class:{value.__name__}"
+        else:
+            serializable_config[key] = str(type(value))
+    # ... handle other types appropriately
+```
+
 ## Testing
 
 A test script has been created (`test_fix.py`) to validate the fixes. To test:
@@ -72,6 +91,7 @@ A test script has been created (`test_fix.py`) to validate the fixes. To test:
 These fixes resolve:
 - 400 Bad Request errors due to validation failures
 - 500 Internal Server Error due to incorrect error handling
+- JSON serialization errors when caching client configurations
 - Proper task creation and retrieval functionality
 
-The server should now properly handle A2A protocol requests according to the expected schema.
+The server should now properly handle A2A protocol requests according to the expected schema and support the Minions parallel processing protocol.
