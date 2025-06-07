@@ -279,55 +279,52 @@ class AuthenticationManager:
             logger.info(f"  Client Secret: {client_secret}")
             logger.info(f"Save these credentials - they won't be shown again!")
     
-    async def authenticate(self, request: Request) -> Optional[TokenData]:
-        """Authenticate request using any available method."""
-        
-        # Extract API key from header
-        api_key = request.headers.get(self.config.api_key_header_name)
-        
-        # Extract Bearer token from Authorization header
-        auth_header = request.headers.get("Authorization")
-        credentials = None
-        if auth_header and auth_header.startswith("Bearer "):
-            credentials = HTTPAuthorizationCredentials(
-                scheme="Bearer",
-                credentials=auth_header[7:]  # Remove "Bearer " prefix
-            )
-        
-        # Try API key authentication
-        if api_key:
-            user_data = self.api_key_manager.validate_api_key(api_key)
-            if user_data:
-                if METRICS_AVAILABLE and metrics_manager:
-                    metrics_manager.track_auth_attempt("api_key", True)
-                return TokenData(
-                    sub=user_data.get("name", "api_user"),
-                    scopes=user_data.get("scopes", [])
+    @property
+    def authenticate(self):
+        """Return authentication dependency function."""
+        async def _authenticate(
+            request: Request,
+            api_key: Optional[str] = Depends(self.api_key_header),
+            credentials: Optional[HTTPAuthorizationCredentials] = Depends(self.bearer_scheme)
+        ) -> Optional[TokenData]:
+            """Authenticate request using any available method."""
+            
+            # Try API key authentication
+            if api_key:
+                user = self.api_key_manager.validate_api_key(api_key)
+                if user:
+                    if METRICS_AVAILABLE and metrics_manager:
+                        metrics_manager.track_auth_attempt("api_key", True)
+                    return TokenData(
+                        sub=user.get("name", "api_key_user"),
+                        scopes=user.get("scopes", [])
+                    )
+                else:
+                    if METRICS_AVAILABLE and metrics_manager:
+                        metrics_manager.track_auth_attempt("api_key", False)
+            
+            # Try JWT bearer authentication
+            if credentials and credentials.scheme == "Bearer":
+                token_data = self.jwt_manager.verify_token(credentials.credentials)
+                if token_data:
+                    if METRICS_AVAILABLE and metrics_manager:
+                        metrics_manager.track_auth_attempt("jwt", True)
+                    return token_data
+                else:
+                    if METRICS_AVAILABLE and metrics_manager:
+                        metrics_manager.track_auth_attempt("jwt", False)
+            
+            # No valid authentication found
+            if self.config.require_auth:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Authentication required",
+                    headers={"WWW-Authenticate": "Bearer, ApiKey"}
                 )
-            else:
-                if METRICS_AVAILABLE and metrics_manager:
-                    metrics_manager.track_auth_attempt("api_key", False)
+            
+            return None
         
-        # Try JWT bearer authentication
-        if credentials and credentials.scheme == "Bearer":
-            token_data = self.jwt_manager.verify_token(credentials.credentials)
-            if token_data:
-                if METRICS_AVAILABLE and metrics_manager:
-                    metrics_manager.track_auth_attempt("jwt", True)
-                return token_data
-            else:
-                if METRICS_AVAILABLE and metrics_manager:
-                    metrics_manager.track_auth_attempt("jwt", False)
-        
-        # No valid authentication found
-        if self.config.require_auth:
-            raise HTTPException(
-                status_code=401,
-                detail="Authentication required",
-                headers={"WWW-Authenticate": "Bearer, ApiKey"}
-            )
-        
-        return None
+        return _authenticate
     
     def get_authenticate_dependency(self):
         """Get a FastAPI dependency function for authentication."""

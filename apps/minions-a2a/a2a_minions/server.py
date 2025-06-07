@@ -60,19 +60,19 @@ class TaskManager:
         self._cleanup_task = None
         self._metrics_task = None
         self._shutdown_event = None
-        self._background_tasks_started = False
+        self._started = False
     
-    async def start_background_tasks(self):
-        """Start background tasks when event loop is available."""
-        if self._background_tasks_started:
+    async def start(self):
+        """Start background tasks. Must be called when event loop is running."""
+        if self._started:
             return
         
         self._shutdown_event = asyncio.Event()
-        self._start_cleanup_task()
-        self._start_metrics_task()
-        self._background_tasks_started = True
+        await self._start_cleanup_task()
+        await self._start_metrics_task()
+        self._started = True
     
-    def _start_cleanup_task(self):
+    async def _start_cleanup_task(self):
         """Start background task for periodic cleanup."""
         async def cleanup_loop():
             while True:
@@ -86,7 +86,7 @@ class TaskManager:
         
         self._cleanup_task = asyncio.create_task(cleanup_loop())
     
-    def _start_metrics_task(self):
+    async def _start_metrics_task(self):
         """Start background task for periodic metrics updates."""
         async def metrics_loop():
             while True:
@@ -530,7 +530,8 @@ class A2AMinionsServer:
         self.base_url = base_url or f"http://{host}:{port}"
         self.app = FastAPI(title="A2A Minions Server", version="1.0.0")
         self.task_manager = TaskManager()
-        self._shutdown_event = None
+        self._shutdown_event = None  # Will be created when event loop is running
+
         
         # Initialize authentication
         self.auth_config = auth_config or AuthConfig()
@@ -560,6 +561,13 @@ class A2AMinionsServer:
     
     def _setup_routes(self):
         """Set up FastAPI routes."""
+        
+        @self.app.on_event("startup")
+        async def startup_event():
+            """Initialize components on startup."""
+            self._shutdown_event = asyncio.Event()
+            await self.task_manager.start()
+            logger.info("Task manager started successfully")
         
         @self.app.get("/.well-known/agent.json")
         async def get_agent_card():
@@ -820,7 +828,7 @@ class A2AMinionsServer:
         try:
             get_params = GetTaskParams(**params)
         except ValidationError as e:
-            # Re-raise the ValidationError to be caught by the outer exception handler
+            # Re-raise the pydantic ValidationError directly
             raise e
         
         task = await self.task_manager.get_task(get_params.id, user)
@@ -848,7 +856,7 @@ class A2AMinionsServer:
         try:
             cancel_params = CancelTaskParams(**params)
         except ValidationError as e:
-            # Re-raise the ValidationError to be caught by the outer exception handler
+            # Re-raise the pydantic ValidationError directly
             raise e
         
         task = await self.task_manager.get_task(cancel_params.id, user)
@@ -880,40 +888,14 @@ class A2AMinionsServer:
         """Run the server."""
         logger.info(f"Starting A2A Minions Server at {self.base_url}")
         
-        async def serve():
-            # Create shutdown event now that event loop is running
-            self._shutdown_event = asyncio.Event()
-            
-            # Start background tasks now that event loop is running
-            await self.task_manager.start_background_tasks()
-            
-            config = uvicorn.Config(
-                self.app,
-                host=self.host,
-                port=self.port,
-                log_level="info"
-            )
-            server = uvicorn.Server(config)
-            
-            # Run server with shutdown event
-            serve_task = asyncio.create_task(server.serve())
-            shutdown_task = asyncio.create_task(self._shutdown_event.wait())
-            
-            done, pending = await asyncio.wait(
-                {serve_task, shutdown_task},
-                return_when=asyncio.FIRST_COMPLETED
-            )
-            
-            # Cancel pending tasks
-            for task in pending:
-                task.cancel()
-            
-            # Shutdown server if it's still running
-            if serve_task in pending:
-                server.should_exit = True
-                await server.shutdown()
-        
-        asyncio.run(serve())
+        # Use uvicorn.run directly instead of manual asyncio management
+        uvicorn.run(
+            self.app,
+            host=self.host,
+            port=self.port,
+            log_level="info"
+        )
+
 
 
 def main():
