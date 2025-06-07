@@ -60,7 +60,6 @@ class TaskManager:
         self._cleanup_task = None
         self._metrics_task = None
         self._shutdown_event = None
-        # Don't start background tasks in __init__
         self._started = False
     
     async def start(self):
@@ -165,20 +164,25 @@ class TaskManager:
         self._enforce_task_limit()
         
         # Generate a session ID for this task
-        session_id = f"session_{task_id}"
-        
-        # Create initial history with the incoming message
-        history = [message]
-        
-        # Create task status object
-        task_status = TaskStatus(
-            state=TaskState.SUBMITTED,
-            message=None,
-            timestamp=datetime.now().isoformat()
-        )
+        session_id = str(uuid.uuid4())
         
         # Build metadata including user ownership
         task_metadata = metadata.dict() if metadata else {}
+        if user:
+            task_metadata["created_by"] = user
+        task_metadata["created_at"] = datetime.now().isoformat()
+        
+        task = Task(
+            id=task_id,
+            sessionId=session_id,
+            status=TaskStatus(
+                state=TaskState.SUBMITTED,
+                timestamp=datetime.now().isoformat()
+            ),
+            history=[message],  # Initialize history with the first message
+            metadata=task_metadata,
+            artifacts=[]
+        )
         if user:
             task_metadata["created_by"] = user
         task_metadata["created_at"] = datetime.now().isoformat()
@@ -191,6 +195,9 @@ class TaskManager:
             metadata=task_metadata,
             artifacts=[]
         )
+        
+        # Add creation timestamp
+        task.metadata["created_at"] = datetime.now().isoformat()
         
         self.tasks[task_id] = task.dict()
         
@@ -210,8 +217,8 @@ class TaskManager:
             # Update task status
             await self.update_task_status(task_id, TaskState.WORKING)
             
-            # Extract message from history and metadata
-            # The first message in history is the original user message
+            # Extract message and metadata
+            # The message is stored in the history array (first element)
             message = A2AMessage(**task["history"][0])
             metadata = TaskMetadata(**task.get("metadata", {}))
             
@@ -524,6 +531,7 @@ class A2AMinionsServer:
         self.app = FastAPI(title="A2A Minions Server", version="1.0.0")
         self.task_manager = TaskManager()
         self._shutdown_event = None  # Will be created when event loop is running
+
         
         # Initialize authentication
         self.auth_config = auth_config or AuthConfig()
@@ -568,7 +576,7 @@ class A2AMinionsServer:
             return card.dict(exclude_none=True)
         
         @self.app.get("/agent/authenticatedExtendedCard")
-        async def get_extended_card(token_data: TokenData = Depends(self.auth_manager.authenticate)):
+        async def get_extended_card(token_data: TokenData = Depends(self.auth_manager.get_authenticate_dependency())):
             """Get the extended agent card for authenticated users."""
             card = get_extended_agent_card(self.base_url)
             return card.dict(exclude_none=True)
@@ -593,7 +601,7 @@ class A2AMinionsServer:
             request: Request, 
             background_tasks: BackgroundTasks,
             token_data: Optional[TokenData] = Depends(
-                self.auth_manager.authenticate if self.auth_config.require_auth else lambda: None
+                self.auth_manager.get_authenticate_dependency() if self.auth_config.require_auth else lambda request: None
             )
         ):
             """Handle A2A JSON-RPC requests."""
@@ -716,7 +724,7 @@ class A2AMinionsServer:
         try:
             send_params = SendTaskParams(**params)
         except ValidationError as e:
-            # Re-raise the pydantic ValidationError directly
+            # Re-raise the ValidationError to be caught by the outer exception handler
             raise e
         
         # Create task
@@ -887,6 +895,7 @@ class A2AMinionsServer:
             port=self.port,
             log_level="info"
         )
+
 
 
 def main():

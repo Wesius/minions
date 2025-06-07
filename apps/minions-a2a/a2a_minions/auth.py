@@ -326,6 +326,12 @@ class AuthenticationManager:
         
         return _authenticate
     
+    def get_authenticate_dependency(self):
+        """Get a FastAPI dependency function for authentication."""
+        async def _authenticate(request: Request) -> Optional[TokenData]:
+            return await self.authenticate(request)
+        return _authenticate
+    
     def check_scopes(self, token_data: TokenData, required_scopes: List[str]) -> bool:
         """Check if token has required scopes."""
         if "*" in token_data.scopes:  # Admin scope
@@ -390,9 +396,10 @@ class AuthenticationManager:
             granted_scopes = client.scopes
         
         # Generate access token
+        exp_time = datetime.utcnow() + timedelta(seconds=self.config.jwt_expire_seconds)
         token_data = TokenData(
             sub=client_id,
-            exp=datetime.utcnow() + timedelta(seconds=self.config.jwt_expire_seconds),
+            exp=int(exp_time.timestamp()),
             scopes=granted_scopes
         )
         
