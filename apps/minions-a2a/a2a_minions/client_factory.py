@@ -78,12 +78,27 @@ class ClientFactory:
     
     def _get_client_key(self, provider: ProviderType, config: Dict[str, Any]) -> str:
         """Generate a unique key for client configuration."""
-        # Create a copy of config excluding non-serializable fields
-        serializable_config = {
-            k: v for k, v in config.items() 
-            if k not in ['structured_output_schema']  # Exclude non-serializable fields
-        }
         # Create a deterministic key based on provider and config
+        # Filter out non-serializable items like classes
+        serializable_config = {}
+        for key, value in config.items():
+            if key == "structured_output_schema":
+                # For classes, use their name
+                if hasattr(value, '__name__'):
+                    serializable_config[key] = f"class:{value.__name__}"
+                else:
+                    serializable_config[key] = str(type(value))
+            elif isinstance(value, (str, int, float, bool, type(None))):
+                serializable_config[key] = value
+            elif isinstance(value, (list, tuple)):
+                serializable_config[key] = str(value)
+            elif isinstance(value, dict):
+                # Recursively handle nested dicts
+                serializable_config[key] = str(value)
+            else:
+                # For other non-serializable types, use their string representation
+                serializable_config[key] = str(value)
+        
         config_str = json.dumps(serializable_config, sort_keys=True)
         return f"{provider}:{hashlib.md5(config_str.encode()).hexdigest()}"
     
