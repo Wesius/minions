@@ -75,7 +75,7 @@ _note_: for optional Cartesia-MLX install, pip install the basic package and the
 
 **Step 2:** Install a server for running the local model.
 
-We support two servers for running local models: `ollama` and `tokasaurus`. You need to install at least one of these.
+We support three servers for running local models: `ollama`, `tokasaurus`, and `vllm`. You need to install at least one of these.
 
 - You should use `ollama` if you do not have access to NVIDIA GPUs. Install `ollama` following the instructions [here](https://ollama.com/download). To enable Flash Attention, run
   `launchctl setenv OLLAMA_FLASH_ATTENTION 1` and, if on a mac, restart the ollama app.
@@ -83,6 +83,13 @@ We support two servers for running local models: `ollama` and `tokasaurus`. You 
 
 ```
 pip install tokasaurus
+```
+
+- You can also use `vllm` for an OpenAI-compatible server on GPUs. Install `vllm` and start the server with:
+
+```
+pip install vllm
+python -m vllm.entrypoints.openai.api_server --model <model-name>
 ```
 
 <details>
@@ -195,6 +202,9 @@ export PERPLEXITY_BASE_URL=<your-perplexity-base-url>  # Optional: Use a differe
 
 # Tokasaurus
 export TOKASAURUS_BASE_URL=<your-tokasaurus-base-url>  # Optional: Use a different Tokasaurus API endpoint
+
+# vLLM
+export VLLM_BASE_URL=<your-vllm-base-url>  # Optional: Use a different vLLM API endpoint
 
 # DeepSeek
 export DEEPSEEK_API_KEY=<your-deepseek-api-key>

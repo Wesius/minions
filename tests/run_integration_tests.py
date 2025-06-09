@@ -174,7 +174,7 @@ def main():
             'openai', 'anthropic', 'mistral', 'groq', 'gemini',
             'together', 'perplexity', 'sambanova', 'deepseek',
             'huggingface', 'grok', 'sarvam', 'azure', 'llama_api',
-            'cartesia', 'openrouter', 'tokasaurus',
+            'cartesia', 'openrouter', 'tokasaurus', 'vllm',
             'ollama',
             'llamacpp', 'mlx_audio', 'mlx_lm', 'mlx_omni',
             'mlx_parallm_model', 'secure', 'transformers'
