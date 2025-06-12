@@ -662,8 +662,30 @@ class Minions:
             local_usage += usage
 
             def extract_job_output(response: str) -> JobOutput:
-                output = JobOutput.model_validate_json(response)
-                return output
+                try:
+                    # Try to parse as JSON first
+                    output = JobOutput.model_validate_json(response)
+                    return output
+                except Exception as e:
+                    # If JSON parsing fails, try to extract information from text
+                    print(f"Warning: Failed to parse JSON response, using text fallback: {str(e)[:100]}")
+                    
+                    # Try to extract JSON from the response if it's embedded in text
+                    import re
+                    json_match = re.search(r'\{[^{}]*"explanation"[^{}]*\}', response, re.DOTALL)
+                    if json_match:
+                        try:
+                            output = JobOutput.model_validate_json(json_match.group(0))
+                            return output
+                        except:
+                            pass
+                    
+                    # Fallback: create a JobOutput with the raw response
+                    return JobOutput(
+                        explanation=response[:500] if len(response) > 500 else response,
+                        citation=None,
+                        answer=response  # Store full response as answer for processing
+                    )
 
             jobs: List[Job] = []
             for worker_messages, sample, job_manifest, done_reason in zip(
