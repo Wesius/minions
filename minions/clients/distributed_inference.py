@@ -142,26 +142,17 @@ class DistributedInferenceClient(MinionsClient):
         """
         assert len(messages) > 0, "Messages cannot be empty."
         
-        # For distributed inference API, we need to combine all messages into a single query
-        # since the API only accepts a simple query parameter
-        if len(messages) == 1 and messages[0].get("role") == "user":
-            # Single user message - use it directly (this preserves full Minions formatting)
-            query = messages[0].get("content", "")
+        # Check if we have multiple messages - use batch endpoint for parallel processing
+        if len(messages) > 1:
+            return self._batch_chat(messages, **kwargs)
         else:
-            # Multiple messages - combine them meaningfully
-            query_parts = []
-            for message in messages:
-                role = message.get("role", "")
-                content = message.get("content", "")
-                if role == "system":
-                    query_parts.append(f"System: {content}")
-                elif role == "user":
-                    query_parts.append(f"User: {content}")
-                elif role == "assistant":
-                    query_parts.append(f"Assistant: {content}")
-                else:
-                    query_parts.append(content)
-            query = "\n\n".join(query_parts)
+            return self._single_chat(messages[0], **kwargs)
+    
+    def _single_chat(self, message: Dict[str, Any], **kwargs) -> Tuple[List[str], Usage, List[str]]:
+        """Handle single message chat using the /chat endpoint."""
+        # For distributed inference API, we need to extract the content since
+        # the API only accepts a simple query parameter
+        query = message.get("content", "")
         
         try:
             # Use network coordinator
@@ -209,6 +200,91 @@ class DistributedInferenceClient(MinionsClient):
             raise
         except Exception as e:
             self.logger.error(f"Error during Distributed Inference API call: {e}")
+            raise
+    
+    def _batch_chat(self, messages: List[Dict[str, Any]], **kwargs) -> Tuple[List[str], Usage, List[str]]:
+        """Handle multiple messages using the /batch endpoint for parallel processing."""
+        # Extract queries from messages
+        queries = []
+        for message in messages:
+            if message.get("role") == "user":
+                # Single user message - use it directly (this preserves full Minions formatting)
+                queries.append(message.get("content", ""))
+            else:
+                # For non-user messages, create a simple representation
+                role = message.get("role", "")
+                content = message.get("content", "")
+                if role == "system":
+                    queries.append(f"System: {content}")
+                elif role == "assistant":
+                    queries.append(f"Assistant: {content}")
+                else:
+                    queries.append(content)
+        
+        try:
+            # Use batch endpoint for parallel processing
+            url = f"{self.base_url}/batch"
+            
+            # Prepare batch request
+            batch_request = {"queries": queries}
+            
+            # Add model preference if specified and not "auto"
+            if self.model_name and self.model_name != "auto":
+                batch_request["model"] = self.model_name
+            
+            # Optional: Configure concurrency per node (default is 2, max is 10)
+            batch_request["max_concurrent_per_node"] = min(len(queries), 5)  # Balance speed vs resource usage
+            
+            response = self._make_request("POST", url, json=batch_request)
+            data = response.json()
+            
+            # Log batch processing info
+            self.logger.info(f"Batch processed {data.get('total_queries', 0)} queries")
+            self.logger.info(f"Successful: {data.get('successful', 0)}, Failed: {data.get('failed', 0)}")
+            if "nodes_used" in data:
+                self.logger.info(f"Nodes used: {data['nodes_used']}")
+            
+            # Process results in order
+            responses = []
+            total_usage = Usage()
+            done_reasons = []
+            
+            for result in data.get("results", []):
+                if result.get("success", False):
+                    # Clean markdown formatting from response
+                    raw_response = result.get("response", "")
+                    cleaned_response = self._clean_markdown_response(raw_response)
+                    responses.append(cleaned_response)
+                    
+                    # Aggregate usage
+                    usage_data = result.get("usage", {})
+                    total_usage += Usage(
+                        prompt_tokens=usage_data.get("prompt_tokens", 0),
+                        completion_tokens=usage_data.get("completion_tokens", 0)
+                    )
+                    
+                    # Collect done reason
+                    done_reasons.append(result.get("done_reason", "stop"))
+                else:
+                    # Handle failed queries
+                    error_msg = result.get("error", "Unknown error")
+                    self.logger.warning(f"Query failed: {error_msg}")
+                    responses.append(f"Error: {error_msg}")
+                    total_usage += Usage(prompt_tokens=0, completion_tokens=0)
+                    done_reasons.append("error")
+            
+            return responses, total_usage, done_reasons
+            
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                self.logger.error("No nodes available with requested model")
+            elif e.response.status_code == 503:
+                self.logger.error("No healthy nodes available")
+            elif e.response.status_code == 401:
+                self.logger.error("Authentication failed - check API key")
+            raise
+        except Exception as e:
+            self.logger.error(f"Error during Distributed Inference batch API call: {e}")
             raise
 
     def embed(self, content: Any, **kwargs) -> List[List[float]]:
