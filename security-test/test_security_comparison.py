@@ -14,17 +14,23 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from minions.clients.openai import OpenAIClient
 from minions.clients.ollama import OllamaClient
+from minions.clients.distributed_inference import DistributedInferenceClient
 from minions.minions import Minions
 
 # Load environment variables
 load_dotenv()
 
 class SecurityTestComparison:
-    def __init__(self, data_path: str = "security-test/test_data_cleaned.csv", use_ollama: bool = True):
-        """Initialize the security test comparison framework."""
+    def __init__(self, data_path: str = "security-test/test_data_cleaned.csv", provider: str = "ollama"):
+        """Initialize the security test comparison framework.
+        
+        Args:
+            data_path: Path to the test data CSV file
+            provider: Local model provider - "ollama", "distributed", or "openai" (uses gpt-4o-mini)
+        """
         self.data_path = data_path
         self.batch_size = 250
-        self.use_ollama = use_ollama
+        self.provider = provider
         self.results = {
             'minions': {'predictions': [], 'times': []},
             'gpt4o': {'predictions': [], 'times': []}
@@ -74,7 +80,7 @@ class SecurityTestComparison:
         self.gpt4o_client = OpenAIClient(model_name="gpt-4o")
         
         # For Minions, try to use Ollama for local model
-        if use_ollama:
+        if provider == "ollama":
             try:
                 print("Attempting to connect to Ollama...")
                 # Use async mode for better parallel processing with Minions
@@ -88,6 +94,29 @@ class SecurityTestComparison:
                 print("Successfully connected to Ollama with llama3.2")
             except Exception as e:
                 print(f"Failed to connect to Ollama: {e}")
+                print("Falling back to GPT-4o-mini as local model")
+                local_client = OpenAIClient(model_name="gpt-4o-mini")
+        elif provider == "distributed":
+            print("Using Distributed Inference for local model")
+            try:
+                # Get configuration from environment or use defaults
+                coordinator_url = os.getenv("MINIONS_COORDINATOR_URL", "http://localhost:8080")
+                api_key = os.getenv("MINIONS_API_KEY")
+                model_name = "llama3.2:1b" # Optional specific model
+                
+                local_client = DistributedInferenceClient(
+                    model_name=model_name,  # None means auto-select
+                    temperature=0.0,
+                    max_tokens=2048,
+                    base_url=coordinator_url
+                )
+                print(f"Connected to Distributed Inference at {coordinator_url}")
+                if model_name:
+                    print(f"Requesting model: {model_name}")
+                else:
+                    print("Model will be auto-selected by coordinator")
+            except Exception as e:
+                print(f"Failed to connect to Distributed Inference: {e}")
                 print("Falling back to GPT-4o-mini as local model")
                 local_client = OpenAIClient(model_name="gpt-4o-mini")
         else:
@@ -458,7 +487,12 @@ Remember: You MUST return valid JSON with these exact fields."""
         print(f"  Local (Ollama/llama3.2):")
         print(f"    Input tokens:  {self.token_usage['minions']['local']['input_tokens']:,}")
         print(f"    Output tokens: {self.token_usage['minions']['local']['output_tokens']:,}")
-        print(f"    Cost:          ${costs['minions_local']:.4f} (Free with Ollama)")
+        if self.provider == "ollama":
+            print(f"    Cost:          ${costs['minions_local']:.4f} (Free with Ollama)")
+        elif self.provider == "distributed":
+            print(f"    Cost:          ${costs['minions_local']:.4f} (Free with local distributed nodes)")
+        else:
+            print(f"    Cost:          ${costs['minions_local']:.4f}")
         
         print(f"\n  Minions Total Cost: ${costs['minions_total']:.4f}")
         
@@ -515,7 +549,7 @@ Remember: You MUST return valid JSON with these exact fields."""
         
         # If using GPT-4o-mini for local, calculate its cost
         minions_local_cost = 0
-        if not self.use_ollama:
+        if self.provider not in ["ollama", "distributed"]:
             minions_local_input_cost = self.token_usage['minions']['local']['input_tokens'] * self.pricing['gpt-4o-mini']['input']
             minions_local_output_cost = self.token_usage['minions']['local']['output_tokens'] * self.pricing['gpt-4o-mini']['output']
             minions_local_cost = minions_local_input_cost + minions_local_output_cost
@@ -535,10 +569,11 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Compare Minions vs GPT-4o for security packet classification')
     parser.add_argument('--max-batches', type=int, help='Maximum number of batches to process (for testing)')
-    parser.add_argument('--no-ollama', action='store_true', help='Use GPT-4o-mini instead of Ollama for local model')
+    parser.add_argument('--provider', type=str, default='ollama', choices=['ollama', 'distributed', 'openai'],
+                        help='Local model provider - "ollama" (default), "distributed", or "openai" (uses gpt-4o-mini)')
     
     args = parser.parse_args()
     
     # Run the comparison
-    tester = SecurityTestComparison(use_ollama=not args.no_ollama)
+    tester = SecurityTestComparison(provider=args.provider)
     tester.run_comparison(max_batches=args.max_batches) 
