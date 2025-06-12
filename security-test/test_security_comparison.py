@@ -21,7 +21,7 @@ from minions.minions import Minions
 load_dotenv()
 
 class SecurityTestComparison:
-    def __init__(self, data_path: str = "security-test/test_data_cleaned.csv", provider: str = "ollama"):
+    def __init__(self, data_path: str = "test_data_cleaned.csv", provider: str = "ollama"):
         """Initialize the security test comparison framework.
         
         Args:
@@ -331,7 +331,7 @@ Remember: You MUST return valid JSON with these exact fields."""
             
         return predictions, elapsed_time
     
-    def run_comparison(self, max_batches: int = None):
+    def run_comparison(self, max_batches: int = 1):
         """Run the full comparison between Minions and GPT-4o."""
         print("\n" + "="*80)
         print("Starting Security Test Comparison: Minions vs GPT-4o")
