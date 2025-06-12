@@ -16,6 +16,7 @@ from minions.clients.mistral import MistralClient
 from minions.clients.sarvam import SarvamClient
 from minions.clients.docker_model_runner import DockerModelRunnerClient
 from minions.clients.lemonade import LemonadeClient
+from minions.clients.distributed_inference import DistributedInferenceClient
 
 __all__ = [
     "OllamaClient",
@@ -35,6 +36,7 @@ __all__ = [
     "SarvamClient",
     "DockerModelRunnerClient",
     "LemonadeClient",
+    "DistributedInferenceClient",
 ]
 
 try:
@@ -135,4 +137,14 @@ except ImportError:
     print(
         "Warning: cerebras-cloud-sdk is not installed. If you want to use CerebrasClient, "
         "please install it with `pip install cerebras-cloud-sdk`."
+    )
+
+try:
+    from minions.clients.modular import ModularClient
+    __all__.append("ModularClient")
+except ImportError:
+    # print warning that modular is not installed
+    print(
+        "Warning: Modular MAX or OpenAI client is not installed. If you want to use ModularClient, "
+        "please install Modular MAX (https://docs.modular.com/max/get-started) and OpenAI client (pip install openai)."
     )
