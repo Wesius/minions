@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import os
 import requests
 from urllib.parse import quote
+import re
 
 from minions.usage import Usage
 from minions.clients.base import MinionsClient
@@ -55,6 +56,36 @@ class DistributedInferenceClient(MinionsClient):
         self.headers = {}
         if self.api_key:
             self.headers["Authorization"] = f"Bearer {self.api_key}"
+
+    def _clean_markdown_response(self, response_text: str) -> str:
+        """
+        Clean markdown code blocks from response text.
+        
+        Distributed inference API sometimes wraps JSON in markdown code blocks like:
+        ```json
+        {...}
+        ```
+        or
+        ```
+        {...}
+        ```
+        
+        This method strips those markdown wrappers to get clean JSON.
+        """
+        # Remove leading/trailing whitespace
+        cleaned = response_text.strip()
+        
+        # Pattern to match markdown code blocks with optional language identifier
+        # Matches: ```json\n{...}\n``` or ```\n{...}\n```
+        code_block_pattern = r'^```(?:json)?\s*\n(.*?)\n```$'
+        
+        match = re.match(code_block_pattern, cleaned, re.DOTALL)
+        if match:
+            # Extract the content inside the code blocks
+            return match.group(1).strip()
+        
+        # If no code blocks found, return original
+        return cleaned
 
     def _make_request(self, method: str, url: str, **kwargs) -> requests.Response:
         """Make HTTP request with error handling."""
@@ -150,8 +181,9 @@ class DistributedInferenceClient(MinionsClient):
             if "model_used" in data:
                 self.logger.info(f"Model used: {data['model_used']}")
             
-            # Extract response and usage
-            response_text = data.get("response", "")
+            # Extract response and clean any markdown formatting
+            raw_response_text = data.get("response", "")
+            response_text = self._clean_markdown_response(raw_response_text)
             
             # Extract usage information
             usage_data = data.get("usage", {})
