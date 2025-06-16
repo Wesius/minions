@@ -115,11 +115,22 @@ def render_deep_research_ui(minions_instance=None):
                     minions_instance.max_sources_per_round = max_sources
 
                     # Execute the research
-                    result, visited_urls = minions_instance(
+                    result = minions_instance(
                         query=user_query,
                         firecrawl_api_key=firecrawl_api_key,
                         serpapi_key=serpapi_key,
                     )
+                    
+                    # Handle both old and new return formats
+                    if isinstance(result, tuple):
+                        if len(result) == 3:
+                            result, visited_urls, metrics = result
+                            # Could display metrics here if desired
+                        else:
+                            result, visited_urls = result
+                    else:
+                        # Fallback if result is not a tuple
+                        visited_urls = []
                 else:
                     # Placeholder when running UI independently for testing
                     st.warning(

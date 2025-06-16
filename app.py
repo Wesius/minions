@@ -270,6 +270,35 @@ def message_callback(role, message, is_final=True):
     if "placeholder_messages" not in st.session_state:
         st.session_state.placeholder_messages = {}
     
+    # Handle metrics updates
+    if role == "metrics" and isinstance(message, dict):
+        # For DeepResearch metrics, show progress updates
+        if message.get("type") == "round_start":
+            st.info(f"🔄 Starting Round {message['round']}: {message['query']}")
+        elif message.get("type") == "phase_complete":
+            phase_names = {
+                "query_generation": "Query Generation",
+                "web_search": "Web Search",
+                "scraping": "URL Scraping",
+                "summarization": "Content Summarization",
+                "assessment": "Assessment",
+                "synthesis": "Final Synthesis"
+            }
+            phase_display = phase_names.get(message['phase'], message['phase'])
+            st.success(f"✅ {phase_display} completed in {message['time']:.1f}s")
+        elif message.get("type") == "batch_complete":
+            st.info(f"📦 Processed batch {message['batch_num']} ({message['batch_size']} chunks, {message['relevant']} relevant) in {message['time']:.1f}s")
+        elif message.get("type") == "throughput_update":
+            # Create or update a metric placeholder for real-time throughput
+            if "throughput_placeholder" not in st.session_state:
+                st.session_state.throughput_placeholder = st.empty()
+            with st.session_state.throughput_placeholder.container():
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Elapsed", f"{message['elapsed_time']:.1f}s")
+                col2.metric("Worker", f"{message['worker_tps']:.0f} tokens/s")
+                col3.metric("Supervisor", f"{message['supervisor_tps']:.0f} tokens/s")
+        return
+    
     # Map supervisor -> Remote, worker -> Local
     chat_role = "Remote" if role == "supervisor" else "Local"
 
@@ -607,10 +636,15 @@ def initialize_clients(
             )
         elif local_provider == "Distributed Inference":
             server_url = st.session_state.get("distributed_server_url", "http://localhost:8080")
+            st.info(f"🔍 DEBUG: Initializing Distributed Inference Client with URL: {server_url}")
+            print(f"[DEBUG] Distributed Inference Client initialization - Server URL: {server_url}")
+            print(f"[DEBUG] Session state keys: {list(st.session_state.keys())}")
+            print(f"[DEBUG] distributed_server_url in session state: {'distributed_server_url' in st.session_state}")
+            
             st.session_state.local_client = DistributedInferenceClient(
                 model_name=local_model_name,
                 base_url=server_url,
-                timeout=30,
+                timeout=180,  # 3 minutes timeout
                 temperature=local_temperature,
                 max_tokens=int(local_max_tokens),
                 structured_output_schema=StructuredLocalOutput,
@@ -672,13 +706,18 @@ def initialize_clients(
             )
         elif local_provider == "Distributed Inference":
             server_url = st.session_state.get("distributed_server_url", "http://localhost:8080")
+            st.info(f"🔍 DEBUG: Initializing Distributed Inference Client with URL: {server_url}")
+            print(f"[DEBUG] Distributed Inference Client initialization - Server URL: {server_url}")
+            print(f"[DEBUG] Session state keys: {list(st.session_state.keys())}")
+            print(f"[DEBUG] distributed_server_url in session state: {'distributed_server_url' in st.session_state}")
+            
             st.session_state.local_client = DistributedInferenceClient(
                 model_name=local_model_name,
                 base_url=server_url,
-                timeout=30,
+                timeout=180,  # 3 minutes timeout
                 temperature=local_temperature,
                 max_tokens=int(local_max_tokens),
-                structured_output_schema=StructuredLocalOutput,
+                structured_output_schema=None,
             )
         else:  # Ollama
             st.session_state.local_client = OllamaClient(
@@ -1011,13 +1050,16 @@ def run_protocol(
                         )
                     elif local_provider == "Distributed Inference":
                         server_url = st.session_state.get("distributed_server_url", "http://localhost:8080")
+                        st.info(f"🔍 DEBUG: Re-initializing Distributed Inference Client with URL: {server_url}")
+                        print(f"[DEBUG] Re-initializing Distributed Inference Client - Server URL: {server_url}")
+                        
                         st.session_state.local_client = DistributedInferenceClient(
                             model_name=st.session_state.local_model_name,
                             base_url=server_url,
-                            timeout=30,
+                            timeout=180,  # 3 minutes timeout
                             temperature=st.session_state.local_temperature,
                             max_tokens=int(st.session_state.local_max_tokens),
-                            structured_output_schema=StructuredLocalOutput,
+                            structured_output_schema=None,
                         )
 
                     # Reinitialize the local client with the new num_ctx
@@ -1146,11 +1188,38 @@ def run_protocol(
                 chunk_fn=st.session_state.chunk_fn,  # Pass the selected chunking function
             )
         elif protocol == "DeepResearch":
-            output = st.session_state.method(
-                query=task,
-                firecrawl_api_key=st.session_state.get("firecrawl_api_key"),
-                serpapi_key=st.session_state.get("serpapi_api_key"),
-            )
+            try:
+                st.write("[DEBUG] About to call DeepResearch method...")
+                result = st.session_state.method(
+                    query=task,
+                    firecrawl_api_key=st.session_state.get("firecrawl_api_key"),
+                    serpapi_key=st.session_state.get("serpapi_api_key"),
+                )
+                st.write(f"[DEBUG] DeepResearch returned: type={type(result)}, value={result if not isinstance(result, tuple) else f'tuple of length {len(result)}'}")
+                
+                # Handle the new tuple return format
+                if isinstance(result, tuple) and len(result) == 3:
+                    final_response, visited_urls, metrics_summary = result
+                    output = {
+                        "final_answer": final_response,
+                        "visited_urls": visited_urls,
+                        "metrics": metrics_summary
+                    }
+                    st.write("[DEBUG] Successfully unpacked 3-tuple result")
+                else:
+                    # Fallback for old format
+                    output = {"final_answer": result[0] if isinstance(result, tuple) else result}
+                    st.write("[DEBUG] Used fallback format")
+            except ValueError as e:
+                st.error(f"[DEBUG] ValueError during DeepResearch execution: {e}")
+                import traceback
+                st.error(f"[DEBUG] Traceback: {traceback.format_exc()}")
+                raise
+            except Exception as e:
+                st.error(f"[DEBUG] Unexpected error during DeepResearch execution: {type(e).__name__}: {e}")
+                import traceback
+                st.error(f"[DEBUG] Traceback: {traceback.format_exc()}")
+                raise
         elif protocol == "Minion-CUA":
             # For CUA, let's be clear about automation capabilities
             st.info("💡 Using Computer User Automation to physically control your Mac")
@@ -1811,6 +1880,18 @@ with st.sidebar:
                     st.error(f"✗ Server responded with status {response.status_code}")
             except Exception as e:
                 st.error(f"✗ Connection failed: {str(e)}")
+        
+        # Show current URL being used
+        st.info(f"📍 Current Server URL in use: **{st.session_state.get('distributed_server_url', 'Not Set')}**")
+        
+        # Add force refresh button
+        if st.button("🔄 Force Refresh Clients", key="force_refresh_distributed"):
+            # Clear the current clients to force re-initialization
+            for key in ["local_client", "remote_client", "method", "last_distributed_url"]:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.success("✓ Clients will be refreshed on next run!")
+            st.rerun()
 
     # Protocol selection
     st.subheader("Protocol")
@@ -2633,9 +2714,10 @@ else:
     with st.expander("View Combined Context"):
         st.text(context)
 
-    # Add required context description
+    # Add required context description (not needed for DeepResearch)
+    context_label = "One-sentence description of the context (Required)" if protocol != "DeepResearch" else "Context description (Not needed for DeepResearch)"
     context_description = st.text_input(
-        "One-sentence description of the context (Required)", key="context_description"
+        context_label, key="context_description"
     )
 
     # -------------------------
@@ -2663,8 +2745,8 @@ else:
         # Initialize query tracking to help with callback management
         st.session_state.current_query_id = time.time()
         
-        # Validate context description is provided
-        if not context_description.strip():
+        # Validate context description is provided (except for DeepResearch)
+        if protocol != "DeepResearch" and not context_description.strip():
             st.error(
                 "Please provide a one-sentence description of the context before proceeding."
             )
@@ -2693,9 +2775,18 @@ else:
                         and st.session_state.get("max_history_turns")
                         != max_history_turns
                     )
+                    # Check if distributed server URL has changed
+                    or (
+                        local_provider == "Distributed Inference"
+                        and st.session_state.get("last_distributed_url") != st.session_state.get("distributed_server_url")
+                    )
                 ):
 
                     st.write(f"Initializing clients for {protocol} protocol...")
+                    
+                    # Track the distributed server URL
+                    if local_provider == "Distributed Inference":
+                        st.session_state.last_distributed_url = st.session_state.get("distributed_server_url")
 
                     # Get MCP server name if using Minions-MCP
                     mcp_server_name = None
@@ -2764,6 +2855,63 @@ else:
                 st.info(user_query)
                 st.markdown("## 🎯 Final Answer")
                 st.info(output["final_answer"])
+
+                # Display Deep Research metrics if available
+                if protocol == "DeepResearch" and "metrics" in output and output["metrics"]:
+                    st.markdown("---")
+                    st.markdown("## 📊 Deep Research Performance Metrics")
+                    
+                    metrics = output["metrics"]
+                    
+                    # Summary metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Total Time", f"{metrics['total_time']:.1f}s")
+                    col2.metric("Rounds", metrics['rounds_completed'])
+                    col3.metric("Sources", metrics['total_sources'])
+                    col4.metric("Relevance", metrics['relevant_ratio'])
+                    
+                    # Token throughput
+                    st.subheader("🚀 Token Throughput")
+                    tcol1, tcol2 = st.columns(2)
+                    tcol1.metric("Worker Model", metrics['worker_throughput'])
+                    tcol2.metric("Supervisor Model", metrics['supervisor_throughput'])
+                    
+                    # Round-by-round breakdown
+                    st.subheader("🔄 Round-by-Round Analysis")
+                    
+                    for round_data in metrics['rounds']:
+                        with st.expander(f"Round {round_data['number']}: {round_data['query']}", expanded=False):
+                            # Round summary
+                            rcol1, rcol2, rcol3 = st.columns(3)
+                            rcol1.metric("Round Time", f"{round_data['time']:.1f}s")
+                            rcol2.metric("Sources", round_data['sources'])
+                            rcol3.metric("Relevant Chunks", f"{round_data['relevant']}/{round_data['chunks']}")
+                            
+                            # Phase breakdown
+                            st.markdown("**Phase Timing:**")
+                            phases = round_data['phases']
+                            phase_df = pd.DataFrame({
+                                'Phase': ['Query Gen', 'Web Search', 'Scraping', 'Summarization', 'Assessment'],
+                                'Time (s)': [
+                                    phases['query_gen'],
+                                    phases['web_search'],
+                                    phases['scraping'],
+                                    phases['summarization'],
+                                    phases['assessment']
+                                ]
+                            })
+                            st.bar_chart(phase_df.set_index('Phase'))
+                    
+                    # Final synthesis timing
+                    if metrics.get('synthesis_time', 0) > 0:
+                        st.subheader("📝 Final Synthesis")
+                        st.metric("Synthesis Time", f"{metrics['synthesis_time']:.1f}s")
+                    
+                    # Visited URLs
+                    if "visited_urls" in output and output["visited_urls"]:
+                        with st.expander(f"🌐 Visited URLs ({len(output['visited_urls'])})", expanded=False):
+                            for i, url in enumerate(output["visited_urls"], 1):
+                                st.write(f"{i}. {url}")
 
                 # Timing info
                 st.header("Runtime")
